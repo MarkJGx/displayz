@@ -5,7 +5,7 @@ use thiserror::Error;
 use winsafe::{co, EnumDisplayDevices, DISPLAY_DEVICE};
 
 use crate::{
-    properties::{DisplayProperties, DisplaySettings, Position},
+    properties::{DisplayProperties, DisplaySettings, Position, RefreshRate},
     DisplayPropertiesError,
 };
 

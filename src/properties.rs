@@ -54,6 +54,7 @@ pub struct DisplaySettings {
     pub resolution: Resolution,
     pub orientation: Orientation,
     pub fixed_output: FixedOutput,
+    pub refresh_rate: RefreshRate,
 }
 
 impl DisplayProperties {
@@ -90,6 +91,7 @@ impl DisplayProperties {
             resolution: Resolution::new(devmode.dmPelsWidth, devmode.dmPelsHeight),
             orientation: Orientation::from_winsafe(devmode.dmDisplayOrientation())?,
             fixed_output: FixedOutput::from_winsafe(devmode.dmDisplayFixedOutput())?,
+            refresh_rate: RefreshRate(devmode.dmDisplayFrequency)
         })
     }
 
@@ -112,6 +114,7 @@ impl DisplayProperties {
             settings.orientation,
             settings.fixed_output,
             settings.resolution,
+            settings.refresh_rate
         );
 
         let result = winsafe::ChangeDisplaySettingsEx(Some(&self.name), Some(&mut devmode), flags);
@@ -129,6 +132,7 @@ trait FromDisplaySettings {
     fn set_orientation(&mut self, orientation: Orientation);
     fn set_fixed_output(&mut self, fixed_output: FixedOutput);
     fn set_resolution(&mut self, resolution: Resolution);
+    fn set_refresh_rate(&mut self, refresh_rate: RefreshRate);
 
     /// Converts display settings into a `winsafe::DEVMODE` struct
     fn from_display_settings(
@@ -136,12 +140,14 @@ trait FromDisplaySettings {
         orientation: Orientation,
         fixed_output: FixedOutput,
         resolution: Resolution,
+        refresh_rate: RefreshRate
     ) -> winsafe::DEVMODE {
         let mut devmode = winsafe::DEVMODE::default();
         devmode.set_position(position);
         devmode.set_orientation(orientation);
         devmode.set_fixed_output(fixed_output);
         devmode.set_resolution(resolution);
+        devmode.set_refresh_rate(refresh_rate);
         devmode
     }
 }
@@ -166,6 +172,11 @@ impl FromDisplaySettings for winsafe::DEVMODE {
         self.dmPelsWidth = resolution.width;
         self.dmPelsHeight = resolution.height;
         self.dmFields |= winsafe::co::DM::PELSWIDTH | winsafe::co::DM::PELSHEIGHT;
+    }
+
+    fn set_refresh_rate(&mut self, refresh_rate: RefreshRate) {
+        self.dmDisplayFrequency = refresh_rate.0;
+        self.dmFields |= winsafe::co::DM::DISPLAYFREQUENCY;
     }
 }
 
@@ -424,3 +435,6 @@ impl FromStr for FixedOutput {
         }
     }
 }
+
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct RefreshRate(pub u32);
