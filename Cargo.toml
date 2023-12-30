@@ -1,23 +1,23 @@
 [package]
 name = "displayz"
 version = "0.1.0"
-authors = ["Michael Lohr <michael@lohr.dev>", "Schuwi <Schuwi@protonmail.ch>"]
-description = "A CLI tool and library to control display settings on Windows written in Rust. "
+authors = ["Michael Lohr <michael@lohr.dev>", "Schuwi <Schuwi@protonmail.ch>", "MarkJGx <mark.jg@chemicalheads.com>"]
+description = "A library to control display settings on Windows written in Rust. "
 edition = "2021"
 readme = "README.md"
-repository = "https://github.com/michidk/displayz"
-documentation = "https://github.com/michidk/displayz"
-homepage = "https://github.com/michidk/displayz"
+repository = "https://github.com/MarkJGx/displayz"
+documentation = "https://github.com/MarkJGx/displayz"
+homepage = "https://github.com/MarkJGx/displayz"
 license = "MIT"
 keywords = ["display", "settings", "cli"]
 categories = ["command-line-utilities", "config"]
 
 [dependencies]
 color-eyre = "0.6.1"
-env_logger = "0.9.0"
+env_logger = "0.10.1"
 log = "0.4.17"
 structopt = "0.3.26"
 thiserror = "1.0.31"
-winsafe = { version = "0.0.10", features = ["user"] }
+winsafe = { version = "0.0.18", features = ["user"] }
 serde = { version = "1.0.193", features = ["derive"] }
 serde_json = "1.0.108"

@@ -1,5 +1,6 @@
 use core::fmt;
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::ops::{Add, Neg, Sub};
 use std::str::FromStr;
 
@@ -63,7 +64,7 @@ pub struct DisplaySettings {
 impl DisplayProperties {
     /// Create a display properties struct from a winsafe display
     pub fn from_winsafe(device: &DISPLAY_DEVICE) -> DisplayPropertyResult<DisplayProperties> {
-        let active = device.StateFlags.has(co::DISPLAY_DEVICE::ACTIVE);
+        let active = device.StateFlags.has(co::DISPLAY_DEVICE::ATTACHED_TO_DESKTOP);
         let settings = if active {
             Some(RefCell::new(Self::fetch_settings(&device.DeviceName())?))
         } else {
@@ -397,7 +398,7 @@ pub enum Orientation {
 
 impl Orientation {
     /// Creates a new orientation from `winsafe::co::DMD0`
-    fn from_winsafe(co_dmdo: co::DMDO) -> DisplayPropertyResult<Self> {
+    pub(crate) fn from_winsafe(co_dmdo: co::DMDO) -> DisplayPropertyResult<Self> {
         match co_dmdo {
             co::DMDO::DEFAULT => Ok(Orientation::Landscape),
             co::DMDO::D90 => Ok(Orientation::PortraitFlipped),
@@ -462,7 +463,7 @@ pub enum FixedOutput {
 
 impl FixedOutput {
     /// Creates a new fixed output struct from `winsafe::co::DMDF0`
-    fn from_winsafe(co_dmdfo: co::DMDFO) -> DisplayPropertyResult<Self> {
+    pub(crate) fn from_winsafe(co_dmdfo: co::DMDFO) -> DisplayPropertyResult<Self> {
         match co_dmdfo {
             co::DMDFO::DEFAULT => Ok(FixedOutput::Default),
             co::DMDFO::STRETCH => Ok(FixedOutput::Stretch),
@@ -515,3 +516,64 @@ impl FromStr for FixedOutput {
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RefreshRate(pub u32);
+
+/// Error type for the display module
+#[derive(Error, Debug)]
+pub enum DisplayStateError {
+    #[error("Error in DisplayProperties")]
+    Properties(#[from] DisplayPropertiesError),
+    #[error("Error when calling the Windows API")]
+    WinAPI(#[from] co::ERROR),
+    #[error("Failed to commit the changes; Returned flags: {0}")]
+    FailedToCommit(co::DISP_CHANGE),
+}
+
+
+/// A struct that represents a display (index)
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DisplayState {
+    pub device_key: String,
+    pub position: Position,
+    pub resolution: Resolution,
+    pub refresh_rate: RefreshRate,
+    pub fixed_output: FixedOutput,
+    pub orientation: Orientation,
+    pub is_primary: bool,
+    pub is_enabled: bool,
+}
+
+impl DisplayState {
+    pub fn new(windows_display_state: &DISPLAY_DEVICE) -> Option<DisplayState> {
+        let device_name: String = windows_display_state.DeviceName();
+        let mut dev_mode = winsafe::DEVMODE::default();
+
+        if winsafe::EnumDisplaySettings(Some(device_name.as_str()), GmidxEnum::Enum(co::ENUM_SETTINGS::CURRENT), &mut dev_mode).is_ok() {
+            let device_key: String = windows_display_state.DeviceKey();
+            let position = Position(dev_mode.dmPosition());
+            let resolution = Resolution::new(dev_mode.dmPelsWidth, dev_mode.dmPelsHeight);
+            let orientation = Orientation::from_winsafe(dev_mode.dmDisplayOrientation()).expect("Failed to find corresponding orientation enum");
+            let fixed_output = FixedOutput::from_winsafe(dev_mode.dmDisplayFixedOutput()).expect("Failed to find corresponding fixed output enum");
+            let refresh_rate = RefreshRate(dev_mode.dmDisplayFrequency);
+
+            return Some(DisplayState {
+                device_key,
+                position,
+                resolution,
+                refresh_rate,
+                fixed_output,
+                orientation,
+                is_primary: windows_display_state.StateFlags.has(co::DISPLAY_DEVICE::PRIMARY_DEVICE),
+                is_enabled: windows_display_state.StateFlags.has(co::DISPLAY_DEVICE::ATTACHED_TO_DESKTOP) &&
+                    !windows_display_state.StateFlags.has(co::DISPLAY_DEVICE::DISCONNECT)
+            });
+        }
+
+        return None;
+    }
+}
+
+impl Hash for DisplayState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.device_key.hash(state);
+    }
+}
