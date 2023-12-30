@@ -3,9 +3,11 @@ use std::cell::{Cell, RefCell};
 
 use thiserror::Error;
 use winsafe::{co, EnumDisplayDevices, DISPLAY_DEVICE};
+use serde::{Deserialize, Serialize};
+
 
 use crate::{
-    properties::{DisplayProperties, DisplaySettings, Position},
+    properties::{DisplayProperties, DisplaySettings, Position, RefreshRate},
     DisplayPropertiesError,
 };
 
@@ -69,13 +71,15 @@ impl Display<'_> {
         self.display_set.set_primary(self)
     }
 
+    pub fn is_active(&self) -> bool { self.properties().active }
+
     pub fn apply(&self) -> Result {
         self.properties().apply().map_err(DisplayError::Properties)
     }
 }
 
 /// A struct that represents a set of displays
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DisplaySet {
     /// The displays in this set
     displays: Vec<DisplayProperties>,
