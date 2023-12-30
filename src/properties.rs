@@ -5,6 +5,9 @@ use std::str::FromStr;
 
 use thiserror::Error;
 use winsafe::{co, prelude::NativeBitflag, GmidxEnum, DISPLAY_DEVICE, POINT};
+use serde;
+use serde::ser::{Serialize, SerializeStruct, Serializer};
+use serde::de::{self, Deserialize, Deserializer, Visitor, SeqAccess, MapAccess};
 
 /// Error type for the display module
 #[derive(Error, Debug)]
@@ -21,10 +24,10 @@ pub enum DisplayPropertiesError {
     InvalidFixedOutput(String),
 }
 
-type Result<T = ()> = std::result::Result<T, DisplayPropertiesError>;
+type DisplayPropertyResult<T = ()> = std::result::Result<T, DisplayPropertiesError>;
 
 /// Contains the properties of a display
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DisplayProperties {
     pub name: String,
 
@@ -48,7 +51,7 @@ impl fmt::Display for DisplayProperties {
 }
 
 /// Contains the settings of a display
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DisplaySettings {
     pub position: Position,
     pub resolution: Resolution,
@@ -59,7 +62,7 @@ pub struct DisplaySettings {
 
 impl DisplayProperties {
     /// Create a display properties struct from a winsafe display
-    pub fn from_winsafe(device: &DISPLAY_DEVICE) -> Result<DisplayProperties> {
+    pub fn from_winsafe(device: &DISPLAY_DEVICE) -> DisplayPropertyResult<DisplayProperties> {
         let active = device.StateFlags.has(co::DISPLAY_DEVICE::ACTIVE);
         let settings = if active {
             Some(RefCell::new(Self::fetch_settings(&device.DeviceName())?))
@@ -78,7 +81,7 @@ impl DisplayProperties {
     }
 
     /// Fetch the settings of a display
-    fn fetch_settings(name: &str) -> Result<DisplaySettings> {
+    fn fetch_settings(name: &str) -> DisplayPropertyResult<DisplaySettings> {
         let mut devmode = winsafe::DEVMODE::default();
         winsafe::EnumDisplaySettings(
             Some(name),
@@ -96,7 +99,7 @@ impl DisplayProperties {
     }
 
     /// Apply the settings of the display
-    pub fn apply(&self) -> Result {
+    pub fn apply(&self) -> DisplayPropertyResult {
         if self.settings.is_none() {
             return Err(DisplayPropertiesError::NoSettings(self.name.to_string()));
         }
@@ -191,6 +194,80 @@ impl Position {
     }
 }
 
+impl Serialize for Position {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer {
+        let mut state = serializer.serialize_struct("Position", 2)?;
+        state.serialize_field("x", &self.0.x)?;
+        state.serialize_field("y", &self.0.y)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Position {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+    {
+
+       #[derive(serde::Deserialize)]
+       #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field { X, Y }
+        
+        struct PositionVisitor;
+
+        impl<'de> Visitor<'de> for PositionVisitor {
+            type Value = Position;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct Position")
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<Position, V::Error>
+                where
+                    V: SeqAccess<'de>,
+            {
+                let x = seq.next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let y = seq.next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                Ok(Position::new(x, y))
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Position, V::Error>
+                where
+                    V: MapAccess<'de>,
+            {
+                let mut x = None;
+                let mut y = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::X => {
+                            if x.is_some() {
+                                return Err(de::Error::duplicate_field("x"));
+                            }
+                            x = Some(map.next_value()?);
+                        }
+                        Field::Y => {
+                            if y.is_some() {
+                                return Err(de::Error::duplicate_field("y"));
+                            }
+                            y = Some(map.next_value()?);
+                        }
+                    }
+                }
+                let x_value = x.ok_or_else(|| de::Error::missing_field("x"))?;
+                let y_value = y.ok_or_else(|| de::Error::missing_field("y"))?;
+                Ok(Position::new(x_value, y_value))
+            }
+        }
+
+        const FIELDS: &'static [&'static str] = &["x", "y"];
+        deserializer.deserialize_struct("Position", FIELDS, PositionVisitor)
+    }
+}
+
 impl Add for Position {
     type Output = Self;
 
@@ -265,7 +342,7 @@ impl FromStr for Position {
 }
 
 /// Contains the resolution of a display
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Resolution {
     pub width: u32,
     pub height: u32,
@@ -310,7 +387,7 @@ impl FromStr for Resolution {
 }
 
 /// Contains the orientation of a display
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Orientation {
     Landscape,        // default
     LandscapeFlipped, // upside-down
@@ -320,7 +397,7 @@ pub enum Orientation {
 
 impl Orientation {
     /// Creates a new orientation from `winsafe::co::DMD0`
-    fn from_winsafe(co_dmdo: co::DMDO) -> Result<Self> {
+    fn from_winsafe(co_dmdo: co::DMDO) -> DisplayPropertyResult<Self> {
         match co_dmdo {
             co::DMDO::DEFAULT => Ok(Orientation::Landscape),
             co::DMDO::D90 => Ok(Orientation::PortraitFlipped),
@@ -376,7 +453,7 @@ impl FromStr for Orientation {
 }
 
 /// Contains the fixed output of a display
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FixedOutput {
     Default,
     Stretch,
@@ -385,7 +462,7 @@ pub enum FixedOutput {
 
 impl FixedOutput {
     /// Creates a new fixed output struct from `winsafe::co::DMDF0`
-    fn from_winsafe(co_dmdfo: co::DMDFO) -> Result<Self> {
+    fn from_winsafe(co_dmdfo: co::DMDFO) -> DisplayPropertyResult<Self> {
         match co_dmdfo {
             co::DMDFO::DEFAULT => Ok(FixedOutput::Default),
             co::DMDFO::STRETCH => Ok(FixedOutput::Stretch),
@@ -436,5 +513,5 @@ impl FromStr for FixedOutput {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RefreshRate(pub u32);
