@@ -186,7 +186,7 @@ impl FromDisplaySettings for winsafe::DEVMODE {
 
 /// Contains the position of a display
 #[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Position(POINT);
+pub struct Position(pub POINT);
 
 impl Position {
     /// Create a position
@@ -411,7 +411,7 @@ impl Orientation {
     }
 
     /// Creates the winsafe orientation struct
-    fn to_winsafe(self) -> co::DMDO {
+    pub(crate) fn to_winsafe(self) -> co::DMDO {
         match self {
             Orientation::Landscape => co::DMDO::DEFAULT,
             Orientation::PortraitFlipped => co::DMDO::D90,
@@ -475,7 +475,7 @@ impl FixedOutput {
     }
 
     /// Creates a winsafe struct
-    fn to_winsafe(self) -> co::DMDFO {
+    pub(crate) fn to_winsafe(self) -> co::DMDFO {
         match self {
             FixedOutput::Default => co::DMDFO::DEFAULT,
             FixedOutput::Stretch => co::DMDFO::STRETCH,
@@ -530,7 +530,7 @@ pub enum DisplayStateError {
 
 
 /// A struct that represents a display (index)
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DisplayState {
     pub device_key: String,
     pub position: Position,
@@ -577,3 +577,11 @@ impl Hash for DisplayState {
         self.device_key.hash(state);
     }
 }
+
+impl PartialEq for DisplayState {
+    fn eq(&self, other: &Self) -> bool {
+        self.device_key == other.device_key
+    }
+}
+
+impl Eq for DisplayState {}
