@@ -10,7 +10,7 @@ use winsafe::co::EDD;
 use winsafe::prelude::NativeBitflag;
 
 
-use crate::{DisplayPropertiesError, DisplayState, Resolution, FixedOutput, Orientation};
+use crate::{DisplayPropertiesError, DisplayState, Resolution, FixedOutput, Orientation, Position};
 
 // This should be a generator instead, but I like the set based APIs. Since DisplayState are truly unique per entry (key'd by devicekey),
 // you can perform all kind of set operations on them.
@@ -25,7 +25,6 @@ pub fn get_all_display_set() -> HashSet<DisplayState> {
 
     return all_displays;
 }
-
 
 pub struct DisplaySetChangeContext {
     // The displays we're about to be changing.
@@ -86,7 +85,31 @@ impl DisplaySetChangeContext {
         }
 
         if new_display_state.is_enabled != original_display_state.is_enabled {
-            is_enabled_changed = true;
+            // Look at https://stackoverflow.com/a/33746637 AttachDisplayDevice/DetachDisplayDevice
+
+            if new_display_state.is_enabled {
+                // If we didn't have a position set on enabling, let's set a position
+                if (!changed_devmode.dmFields.has(co::DM::POSITION)) {
+                    changed_devmode.set_dmPosition(Position::new(0, 0).0);
+                    changed_devmode.dmFields |= co::DM::POSITION;
+                }
+                // If we didn't have a position set on enabling, let's set a resolution. We need one after all.
+                if (!changed_devmode.dmFields.has(co::DM::PELSWIDTH | co::DM::PELSHEIGHT)) {
+                    // @todo: Implement mode search later. 
+
+                    changed_devmode.dmPelsWidth = 640;
+                    changed_devmode.dmPelsHeight = 480;
+                    changed_devmode.dmFields |= co::DM::PELSWIDTH | co::DM::PELSHEIGHT;
+                }
+                
+            } else {
+                changed_devmode.set_dmPosition(Position::new(0, 0).0);
+                changed_devmode.dmFields |= co::DM::POSITION;
+
+                changed_devmode.dmPelsWidth = 0;
+                changed_devmode.dmPelsHeight = 0;
+                changed_devmode.dmFields |= co::DM::PELSWIDTH | co::DM::PELSHEIGHT;
+            }
         }
 
         // if anything has changed at all
