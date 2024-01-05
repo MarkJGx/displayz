@@ -1,222 +1,159 @@
 use core::fmt;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use thiserror::Error;
-use winsafe::{co, EnumDisplayDevices, DISPLAY_DEVICE};
+use winsafe::{ChangeDisplaySettings, co, DISPLAY_DEVICE, EnumDisplayDevices};
+use serde::{Deserialize, Serialize};
+use winsafe::co::EDD;
+use winsafe::prelude::NativeBitflag;
 
-use crate::{
-    properties::{DisplayProperties, DisplaySettings, Position},
-    DisplayPropertiesError,
-};
 
-/// Error type for the display module
-#[derive(Error, Debug)]
-pub enum DisplayError {
-    #[error("Error in DisplayProperties")]
-    Properties(#[from] DisplayPropertiesError),
-    #[error("Error when calling the Windows API")]
-    WinAPI(#[from] co::ERROR),
-    #[error("Only active displays can used as a primary display")]
-    PrimaryDisplay,
-    #[error("Display {0} has no settings")]
-    NoSettings(String),
-    #[error("Failed to commit the changes; Returned flags: {0}")]
-    FailedToCommit(co::DISP_CHANGE),
-}
+use crate::{DisplayPropertiesError, DisplayState, Resolution, FixedOutput, Orientation, Position};
 
-type Result<T = ()> = std::result::Result<T, DisplayError>;
-
-/// A struct that represents a display (index)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Display<'a> {
-    /// The index of the display in the display set
-    index: usize,
-    /// THe display set containing this display
-    display_set: &'a DisplaySet,
-}
-
-/// Generates getter for properties of a display
-macro_rules! get_properties_str {
-    ($field:ident) => {
-        pub fn $field(&self) -> &str {
-            self.properties().$field.as_str()
-        }
-    };
-}
-
-impl Display<'_> {
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    fn properties(&self) -> &DisplayProperties {
-        &self.display_set.displays[self.index]
-    }
-
-    get_properties_str!(name);
-    get_properties_str!(string);
-    get_properties_str!(key);
-
-    pub fn settings(&self) -> &Option<RefCell<DisplaySettings>> {
-        &self.properties().settings
-    }
-
-    pub fn is_primary(&self) -> bool {
-        self.display_set.primary_display.get() == self.index
-    }
-
-    pub fn set_primary(&self) -> Result {
-        self.display_set.set_primary(self)
-    }
-
-    pub fn apply(&self) -> Result {
-        self.properties().apply().map_err(DisplayError::Properties)
-    }
-}
-
-/// A struct that represents a set of displays
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DisplaySet {
-    /// The displays in this set
-    displays: Vec<DisplayProperties>,
-    /// The primary display
-    primary_display: Cell<usize>,
-}
-
-impl DisplaySet {
-    /// Iterates over the displays in this set
-    pub fn displays(&self) -> impl ExactSizeIterator<Item = Display> {
-        self.displays.iter().enumerate().map(|(index, _)| Display {
-            index,
-            display_set: self,
-        })
-    }
-
-    /// Returns display for the given `index`
-    pub fn get(&self, index: usize) -> Option<Display> {
-        if index >= self.displays.len() {
-            return None;
-        }
-        Some(Display {
-            index,
-            display_set: self,
-        })
-    }
-
-    /// Returns the primary display
-    pub fn primary(&self) -> Display {
-        Display {
-            index: self.primary_display.get(),
-            display_set: self,
-        }
-    }
-
-    /// Sets the given `display` as the primary display
-    /// Requires a call to `display_set.apply` and `commit_changes` afterwards
-    pub fn set_primary(&self, display: &Display) -> Result {
-        let index = display.index;
-        let new_primary = &self.displays[index];
-
-        if !new_primary.active {
-            return Err(DisplayError::PrimaryDisplay);
-        }
-
-        let old_position = new_primary
-            .settings
-            .as_ref()
-            .ok_or_else(|| DisplayError::NoSettings(new_primary.name.to_string()))?
-            .borrow()
-            .position;
-
-        // move all other displays to new position (because we set a new origin in the next step)
-        for (i, display) in self.displays.iter().enumerate() {
-            if display.active && i != index {
-                let settings = display
-                    .settings
-                    .as_ref()
-                    .ok_or_else(|| DisplayError::NoSettings(display.name.to_string()))?;
-                let pos = settings.borrow().position;
-                settings.borrow_mut().position = -old_position + pos;
-            }
-        }
-
-        // the new primary is the new origin
-        let new_primary_mut = &self.displays[index];
-        let new_settings = new_primary_mut
-            .settings
-            .as_ref()
-            .ok_or_else(|| DisplayError::NoSettings(new_primary_mut.name.to_string()))?;
-
-        new_settings.borrow_mut().position = Position::new(0, 0);
-
-        self.primary_display.set(index);
-
-        Ok(())
-    }
-
-    /// Sets all changes on the displays
-    pub fn apply(&self) -> Result {
-        for display in self.displays.iter() {
-            if display.active {
-                display.apply()?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl fmt::Display for DisplaySet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "DisplaySet {{ displays: [")?;
-        for (i, display) in self.displays.iter().enumerate() {
-            if i > 0 {
-                writeln!(f, ", ")?;
-            }
-            write!(f, "    {}", display)?;
-        }
-        write!(f, "\n] }}")
-    }
-}
-
+// This should be a generator instead, but I like the set based APIs. Since DisplayState are truly unique per entry (key'd by devicekey),
+// you can perform all kind of set operations on them.
 /// Returns a list of all displays.
-pub fn query_displays() -> Result<DisplaySet> {
-    let mut result = Vec::<DisplayProperties>::new();
+pub fn get_all_display_set() -> HashSet<DisplayState> {
+    let all_displays: HashSet<DisplayState> = EnumDisplayDevices(None, None)
+        .filter(|result| result.is_ok())
+        .map(|display| DisplayState::new(display.unwrap()))
+        .filter(|display_state_option| display_state_option.is_some())
+        .map(|display_state| display_state.unwrap())
+        .collect();
 
-    let mut dev_num: usize = 0;
-    let mut display_device = DISPLAY_DEVICE::default();
-
-    loop {
-        let is_good =
-            EnumDisplayDevices(None, dev_num as u32, &mut display_device, co::EDD::NoValue)?;
-
-        if !is_good {
-            break;
-        }
-
-        log::debug!(
-            "{}: {} - {}",
-            dev_num,
-            display_device.DeviceName(),
-            display_device.DeviceString()
-        );
-
-        result.push(DisplayProperties::from_winsafe(&display_device)?);
-
-        dev_num += 1; // advance to next display device
-    }
-
-    Ok(DisplaySet {
-        displays: result,
-        primary_display: Cell::new(0),
-    })
+    return all_displays;
 }
 
-/// Refreshes the screen to apply the changes
-pub fn refresh() -> Result {
-    let result = winsafe::ChangeDisplaySettingsEx(None, None, winsafe::co::CDS::DYNAMICALLY);
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) => Err(DisplayError::FailedToCommit(err)),
+pub struct DisplaySetChangeContext {
+    // The displays we're about to be changing.
+    pub changeable_display_states: Vec<DisplayState>,
+    
+    // Duplicate of the initial starting state, used for diffing.
+    original_display_states: HashSet<DisplayState>
+}
+
+impl DisplaySetChangeContext {
+    pub fn new(changing_displays: &mut HashSet<DisplayState>) -> DisplaySetChangeContext {
+        let original_display_states: HashSet<DisplayState> = changing_displays.to_owned();
+        let mut changeable_display_states = changing_displays.iter().cloned().collect::<Vec<DisplayState>>();
+        
+        DisplaySetChangeContext {
+            changeable_display_states,
+            original_display_states
+        }
+    }
+
+    fn change_display_state(&self, new_display_state: &DisplayState, original_display_state: &DisplayState) -> Result<bool, co::DISP_CHANGE> {
+        let mut is_primary_changed = false;
+        let mut is_enabled_changed = false;
+        
+        let mut changed_devmode = winsafe::DEVMODE::default();
+        let mut changed_cds_flags =
+            winsafe::co::CDS::UPDATEREGISTRY | winsafe::co::CDS::NORESET | winsafe::co::CDS::GLOBAL;
+        
+        if new_display_state.position != original_display_state.position {
+            changed_devmode.set_dmPosition(new_display_state.position.0);
+            changed_devmode.dmFields |= co::DM::POSITION;
+        }
+
+        if new_display_state.resolution != original_display_state.resolution {
+            changed_devmode.dmPelsWidth = new_display_state.resolution.width;
+            changed_devmode.dmPelsHeight = new_display_state.resolution.height;
+            changed_devmode.dmFields |= co::DM::PELSWIDTH | co::DM::PELSHEIGHT;
+        }
+
+
+        if new_display_state.refresh_rate != original_display_state.refresh_rate {
+            changed_devmode.dmDisplayFrequency = new_display_state.refresh_rate.0;
+            changed_devmode.dmFields |= co::DM::DISPLAYFREQUENCY;
+        }
+
+        if new_display_state.fixed_output != original_display_state.fixed_output {
+            changed_devmode.set_dmDisplayFixedOutput(new_display_state.fixed_output.to_winsafe());
+            changed_devmode.dmFields |= co::DM::DISPLAYFIXEDOUTPUT;
+        }
+
+        if new_display_state.orientation != original_display_state.orientation {
+            changed_devmode.set_dmDisplayOrientation(new_display_state.orientation.to_winsafe());
+            changed_devmode.dmFields |= co::DM::DISPLAYORIENTATION;
+        }
+
+        if new_display_state.is_primary != original_display_state.is_primary {
+            changed_cds_flags |= co::CDS::SET_PRIMARY;
+        }
+
+        if new_display_state.is_enabled != original_display_state.is_enabled {
+            // Look at https://stackoverflow.com/a/33746637 AttachDisplayDevice/DetachDisplayDevice
+
+            if new_display_state.is_enabled {
+                // If we didn't have a position set on enabling, let's set a position
+                if (!changed_devmode.dmFields.has(co::DM::POSITION)) {
+                    changed_devmode.set_dmPosition(Position::new(0, 0).0);
+                    changed_devmode.dmFields |= co::DM::POSITION;
+                }
+                // If we didn't have a position set on enabling, let's set a resolution. We need one after all.
+                if (!changed_devmode.dmFields.has(co::DM::PELSWIDTH | co::DM::PELSHEIGHT)) {
+                    // @todo: Implement mode search later. 
+
+                    changed_devmode.dmPelsWidth = 640;
+                    changed_devmode.dmPelsHeight = 480;
+                    changed_devmode.dmFields |= co::DM::PELSWIDTH | co::DM::PELSHEIGHT;
+                }
+                
+            } else {
+                changed_devmode.set_dmPosition(Position::new(0, 0).0);
+                changed_devmode.dmFields |= co::DM::POSITION;
+
+                changed_devmode.dmPelsWidth = 0;
+                changed_devmode.dmPelsHeight = 0;
+                changed_devmode.dmFields |= co::DM::PELSWIDTH | co::DM::PELSHEIGHT;
+            }
+        }
+
+        // if anything has changed at all
+        if changed_devmode.dmFields.raw() > 0 {
+            let change_result = ChangeDisplaySettings(Some(&mut changed_devmode), changed_cds_flags);
+
+            return match change_result {
+                Ok(_) => Ok(true),
+                Err(error) => Err(error)
+            }
+        }
+        
+        // Operation succeeded, but we didnt' change anything.
+        return Ok(false);
+    }
+
+    pub fn commit_changes(&self) {
+        let changed_set = HashSet::from_iter(self.changeable_display_states.iter().cloned());
+        debug_assert!(!changed_set.symmetric_difference(&self.original_display_states).next().is_some(),
+                      "changeable_display_states doesn't have the same keys as the original starting set!");
+
+
+        // Make sure the primary display is always first.
+        let mut sorted_states: Vec<DisplayState> = self.changeable_display_states.clone();
+        sorted_states.sort_by((|a, b| b.is_primary.cmp(&a.is_primary)));
+        println!("{:#?}", sorted_states);
+        
+        // @todo: Convert this to an error.
+        assert_eq!(sorted_states.iter().filter(|display_state| display_state.is_primary).collect::<Vec<&DisplayState>>().len(), 1, "There has to be 1 and only 1 primary display. Look at the left value.");
+
+        let changed_displays = sorted_states.iter().filter(|&state|
+        {
+            self.change_display_state(state, self.original_display_states.get(&state).unwrap()).is_ok()
+        }).count();
+
+        if changed_displays > 0 {
+            /// Refreshes the screen to apply the changes
+            let result = winsafe::ChangeDisplaySettingsEx(None, None, winsafe::co::CDS::DYNAMICALLY);
+        }
+        
+        // match result {
+        //     Ok(_) => Ok(()),
+        //     Err(err) => Err(DisplayError::FailedToCommit(err)),
+        // }
+        return;
     }
 }
